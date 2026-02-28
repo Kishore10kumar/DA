@@ -17,7 +17,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. ADVANCED CLEANING ENGINE (Deep Date Fix) ---
+# --- 2. RESILIENT CLEANING ENGINE (Fixes Missing Rows) ---
 def clean_engine(df):
     # Standardize headers
     df.columns = [re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns]
@@ -36,17 +36,18 @@ def clean_engine(df):
                 break
     df = df.rename(columns=final_cols)
     
-    # --- DEEP DATE PARSING ---
+    # --- DATE REPAIR (Ensures NO rows are deleted) ---
     if 'date' in df.columns:
-        # Step 1: Force conversion of ISO formats (fixes T00:00:00 errors)
-        df['date'] = pd.to_datetime(df['date'], errors='coerce', infer_datetime_format=True)
-        # Step 2: Handle cases where dates are still null
-        df = df.dropna(subset=['date']) 
+        # Convert to datetime; dayfirst=True handles international formats
+        df['date_dt'] = pd.to_datetime(df['date'], errors='coerce')
+        # We keep the original string if conversion fails, so the row is never lost
+        df['date_display'] = df['date_dt'].dt.strftime('%Y-%m-%d').fillna(df['date'].astype(str))
     
     # --- AMOUNT CLEANING ---
     if 'amount' in df.columns:
         df['amount'] = df['amount'].astype(str).str.replace(r'[^\d.]', '', regex=True)
         df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+    
     return df
 
 # --- 3. ZERO-ERROR ACCURACY ENGINE ---
@@ -55,7 +56,7 @@ def apply_strict_logic(df):
         'Health': ['doctor', 'consultation', 'medical', 'pharmacy', 'medicine', 'checkup', 'dental'],
         'Travel': ['hotel', 'accommodation', 'fuel', 'petrol', 'uber', 'ride-sharing', 'transport', 'flight', 'rental'],
         'Education': ['certification', 'exam', 'course', 'tuition', 'textbook', 'university'],
-        'Savings': ['savings', 'emergency fund', 'fixed deposit', 'retirement', 'saved'],
+        'Savings': ['savings', 'emergency fund', 'saved', 'fixed deposit', 'fund'],
         'Groceries': ['grocery', 'supermarket', 'mart', 'blinkit', 'zepto', 'fruit', 'bread', 'vegetables', 'dairy'],
         'Lifestyle': ['haircut', 'salon', 'gym', 'movie', 'concert', 'netflix', 'spotify', 'amusement', 'manicure'],
         'Food & Dining': ['meal', 'diner', 'lunch', 'dinner', 'restaurant', 'cafe', 'starbucks'],
@@ -86,10 +87,11 @@ if uploaded_file and model:
     
     df = clean_engine(df)
     
-    if 'amount' not in df.columns or 'date' not in df.columns:
-        st.error(f"❌ Critical columns missing. Detected: {list(df.columns)}")
+    if 'amount' not in df.columns:
+        st.error(f"❌ Missing Amount column. Found: {list(df.columns)}")
         st.stop()
 
+    # AI Classify + Correction Rules
     X_text = vectorizer.transform(df['description'].astype(str))
     df['category'] = model.predict(X_text)
     df = apply_strict_logic(df) 
@@ -97,7 +99,7 @@ if uploaded_file and model:
     # Metrics
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Expenses", f"₹{df['amount'].sum():,.2f}")
-    m2.metric("Total Transactions", len(df))
+    m2.metric("Total Transactions", f"{len(df):,}")
     m3.metric("Top Spend Category", df['category'].mode()[0])
     m4.metric("Avg Transaction", f"₹{df['amount'].mean():,.2f}")
 
@@ -110,14 +112,13 @@ if uploaded_file and model:
         st.plotly_chart(px.sunburst(df, path=['category', 'description'], values='amount', color='category', color_discrete_sequence=px.colors.qualitative.Pastel), use_container_width=True)
     with v2:
         st.write("### Cash Flow Trend")
-        df_sorted = df.sort_values('date')
-        st.plotly_chart(px.area(df_sorted, x='date', y='amount', template="plotly_white", color_discrete_sequence=['#1f77b4']), use_container_width=True)
+        # Trend graph only uses rows with valid dates
+        df_trend = df.dropna(subset=['date_dt']).sort_values('date_dt')
+        st.plotly_chart(px.area(df_trend, x='date_dt', y='amount', template="plotly_white", color_discrete_sequence=['#1f77b4']), use_container_width=True)
 
     st.write("### Final Categorized Ledger")
-    # Clean up date display for the table
-    df_display = df.copy()
-    df_display['date'] = df_display['date'].dt.strftime('%Y-%m-%d')
-    st.dataframe(df_display[['date', 'description', 'amount', 'category']], use_container_width=True)
+    # Display the ledger using the display-safe date column
+    st.dataframe(df[['date_display', 'description', 'amount', 'category']].rename(columns={'date_display': 'date'}), use_container_width=True)
 
 elif not model:
     st.warning("⚠️ Run train_brain.py first!")
