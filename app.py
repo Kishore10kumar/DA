@@ -6,7 +6,7 @@ import plotly.express as px
 import os
 import re
 
-# --- 1. UI SETTINGS ---
+# --- 1. PRO UI SETTINGS ---
 st.set_page_config(page_title="Universal Finance AI", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
@@ -17,15 +17,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. CLEANING ENGINE (Added 'bill' to the map) ---
+# --- 2. ADVANCED CLEANING ENGINE (Deep Date Fix) ---
 def clean_engine(df):
-    # Strips non-letters from headers (turns 'amount ($)' into 'amount')
+    # Standardize headers
     df.columns = [re.sub(r'[^a-z]', '', str(c).lower()) for c in df.columns]
     
     mapping = {
         'description': ['desc', 'detail', 'particular', 'narrative'],
-        'amount': ['amount', 'amt', 'value', 'debit', 'withdrawal', 'bill'], # Added 'bill' here
-        'date': ['date', 'time', 'txn']
+        'amount': ['amount', 'amt', 'value', 'debit', 'withdrawal', 'bill'],
+        'date': ['date', 'time', 'txn', 'post']
     }
     
     final_cols = {}
@@ -36,21 +36,32 @@ def clean_engine(df):
                 break
     df = df.rename(columns=final_cols)
     
+    # --- DEEP DATE PARSING ---
+    if 'date' in df.columns:
+        # Step 1: Force conversion of ISO formats (fixes T00:00:00 errors)
+        df['date'] = pd.to_datetime(df['date'], errors='coerce', infer_datetime_format=True)
+        # Step 2: Handle cases where dates are still null
+        df = df.dropna(subset=['date']) 
+    
+    # --- AMOUNT CLEANING ---
     if 'amount' in df.columns:
         df['amount'] = df['amount'].astype(str).str.replace(r'[^\d.]', '', regex=True)
         df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
     return df
 
-# --- 3. ACCURACY ENGINE (Internship-winning logic) ---
+# --- 3. ZERO-ERROR ACCURACY ENGINE ---
 def apply_strict_logic(df):
     rules = {
+        'Health': ['doctor', 'consultation', 'medical', 'pharmacy', 'medicine', 'checkup', 'dental'],
+        'Travel': ['hotel', 'accommodation', 'fuel', 'petrol', 'uber', 'ride-sharing', 'transport', 'flight', 'rental'],
         'Education': ['certification', 'exam', 'course', 'tuition', 'textbook', 'university'],
-        'Savings': ['savings', 'emergency fund', 'saved', 'fixed deposit', 'fund'],
-        'Travel': ['hotel', 'accommodation', 'fuel', 'petrol', 'uber', 'flight', 'rental', 'transport'],
-        'Lifestyle': ['haircut', 'salon', 'gym', 'movie', 'concert', 'netflix', 'spotify'],
+        'Savings': ['savings', 'emergency fund', 'fixed deposit', 'retirement', 'saved'],
+        'Groceries': ['grocery', 'supermarket', 'mart', 'blinkit', 'zepto', 'fruit', 'bread', 'vegetables', 'dairy'],
+        'Lifestyle': ['haircut', 'salon', 'gym', 'movie', 'concert', 'netflix', 'spotify', 'amusement', 'manicure'],
+        'Food & Dining': ['meal', 'diner', 'lunch', 'dinner', 'restaurant', 'cafe', 'starbucks'],
         'Investments': ['share', 'stock', 'mutual fund', 'dividend', 'crypto'],
-        'Groceries': ['grocery', 'supermarket', 'mart', 'blinkit', 'zepto', 'fruit', 'bread'],
-        'Food & Dining': ['meal', 'diner', 'lunch', 'dinner', 'restaurant', 'cafe', 'starbucks']
+        'Shopping': ['amazon', 'flipkart', 'clothing', 'decor', 'electronics'],
+        'Bills': ['rent', 'mortgage', 'emi', 'utility', 'electricity', 'water', 'gas', 'internet', 'insurance']
     }
     for cat, keywords in rules.items():
         pattern = '|'.join(keywords)
@@ -75,33 +86,38 @@ if uploaded_file and model:
     
     df = clean_engine(df)
     
-    if 'amount' not in df.columns:
-        st.error(f"❌ Still missing 'amount'. Found: {list(df.columns)}")
+    if 'amount' not in df.columns or 'date' not in df.columns:
+        st.error(f"❌ Critical columns missing. Detected: {list(df.columns)}")
         st.stop()
 
     X_text = vectorizer.transform(df['description'].astype(str))
     df['category'] = model.predict(X_text)
     df = apply_strict_logic(df) 
 
+    # Metrics
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Expenses", f"₹{df['amount'].sum():,.2f}")
-    m2.metric("Total Transactions", f"{len(df):,}")
-    m3.metric("Top Category", df['category'].mode()[0])
-    m4.metric("Avg Spending", f"₹{df['amount'].mean():,.2f}")
+    m2.metric("Total Transactions", len(df))
+    m3.metric("Top Spend Category", df['category'].mode()[0])
+    m4.metric("Avg Transaction", f"₹{df['amount'].mean():,.2f}")
 
     st.divider()
 
+    # Visuals
     v1, v2 = st.columns([1, 1.2])
     with v1:
         st.write("### Spending Hierarchy")
         st.plotly_chart(px.sunburst(df, path=['category', 'description'], values='amount', color='category', color_discrete_sequence=px.colors.qualitative.Pastel), use_container_width=True)
     with v2:
         st.write("### Cash Flow Trend")
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-        df_sorted = df.sort_values('date').dropna(subset=['date'])
+        df_sorted = df.sort_values('date')
         st.plotly_chart(px.area(df_sorted, x='date', y='amount', template="plotly_white", color_discrete_sequence=['#1f77b4']), use_container_width=True)
 
-    st.dataframe(df[['date', 'description', 'amount', 'category']], use_container_width=True)
+    st.write("### Final Categorized Ledger")
+    # Clean up date display for the table
+    df_display = df.copy()
+    df_display['date'] = df_display['date'].dt.strftime('%Y-%m-%d')
+    st.dataframe(df_display[['date', 'description', 'amount', 'category']], use_container_width=True)
 
 elif not model:
     st.warning("⚠️ Run train_brain.py first!")
